@@ -104,9 +104,9 @@ classes(1).name       = "A0";
 classes(1).minArea    = 0.15;
 classes(1).maxArea    = 0.28;
 classes(1).minHeight  = 0.10;
-classes(1).maxHeight  = 0.50;
+classes(1).maxHeight  = 0.21;
 classes(1).minRange   = 1.0;
-classes(1).maxRange   = 10;
+classes(1).maxRange   = 15;
 classes(1).useTracker = true;
 classes(1).color      = [1 0.5 0];
 
@@ -133,7 +133,7 @@ classes(3).color      = [0 1 0];
 classes(4).name       = "CourseBoat";
 classes(4).minArea    = 0.6;
 classes(4).maxArea    = 1.4;
-classes(4).minHeight  = 0.3;
+classes(4).minHeight  = 0.4;
 classes(4).maxHeight  = 0.8;
 classes(4).minRange   = 1.0;
 classes(4).maxRange   = 15;
@@ -149,6 +149,16 @@ classes(5).minRange   = 1.0;
 classes(5).maxRange   = 15;
 classes(5).useTracker = true;
 classes(5).color      = [1 1 1];
+
+classes(6).name       = "A2";
+classes(6).minArea    = 0.3;
+classes(6).maxArea    = 0.6;
+classes(6).minHeight  = 0.22;
+classes(6).maxHeight  = 0.4;
+classes(6).minRange   = 1.0;
+classes(6).maxRange   = 15;
+classes(6).useTracker = true;
+classes(6).color      = [0.5 0 0.5];
 
 end
 

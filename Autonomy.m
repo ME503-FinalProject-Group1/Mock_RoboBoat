@@ -49,7 +49,8 @@ scanthecode='';
 if isempty(data)
 
     % ---- Mode ----
-    data.useRC = false;          % true = joystick (RC), false = waypoint following
+    data.useRC = true;          % true = joystick (RC), false = waypoint following
+    data.objectCal = false;      % true = turn on prints for object data (clusters, area, height)
 
     % ---- Classifier memory (Classify.m fills it in on the first call) ----
     data.cls = [];
@@ -241,7 +242,13 @@ end
 
 drawnow;
 
+%% Calibration: average area and height of clusters in view
+if data.objectCal
+    printObjectCalibration(data, state);
 end
+
+end
+
 
 
 %%  LiDAR filtering: raw sensor-frame scan -> 3 x n NED points [N; E; D]
@@ -314,7 +321,7 @@ portCmd      = portCmd / maxMag;
 starboardCmd = starboardCmd / maxMag;
 
 % Deadman behavior (right bumper button)
-if buttons(6) < buttonThresh 
+if buttons(6) > buttonThresh 
     commands.actuators   = [0 0];
     commands.projectiles = [false false];
 else
@@ -322,6 +329,43 @@ else
     commands.projectiles = [buttons(1) > buttonThresh, buttons(2) > buttonThresh];
 end
 
+end
+
+%% Object calibration data
+function printObjectCalibration(data, state)
+% Print average area and height of clusters within view radius.
+
+if isempty(data.cls.clusterAreas)
+    return
+end
+
+boatEN     = [state.Pos(2) state.Pos(1)];   % [East North]
+viewRadius = 15;                            % m, what counts as "in view"
+
+areasInView   = [];
+heightsInView = [];
+
+for k = 1:numel(data.cls.clusterAreas)
+    clusterCenter = data.cls.clusterCenters(:, k)';
+
+    if data.cls.clusterAreas(k) == 0 || any(isnan(clusterCenter))
+        continue
+    end
+
+    distToBoat = norm(clusterCenter - boatEN);
+    if distToBoat > viewRadius || distToBoat < 1.0
+        continue
+    end
+
+    areasInView(end+1)   = data.cls.clusterAreas(k);   %#ok<AGROW>
+    heightsInView(end+1) = data.cls.clusterHeights(k); %#ok<AGROW>
+end
+
+if ~isempty(areasInView)
+    fprintf('In view: %d clusters | avg area %.2f m^2 | avg height %.2f m (min %.2f, max %.2f)\n', ...
+        numel(areasInView), mean(areasInView), mean(heightsInView), ...
+        min(heightsInView), max(heightsInView));
+end
 end
 
 %%  Waypoint following: wait -> fix heading -> drive -> reset
