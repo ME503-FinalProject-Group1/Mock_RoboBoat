@@ -38,7 +38,8 @@ function [commands,scanthecode,data]=Autonomy(state,LidarScan,cameraImage,data)
 %                        classification and (later) obstacle avoidance
 %   3. Classification  - Classify.m turns LidarFiltered into objects
 %   4. Plotting        - updatePlots() only sets properties on existing handles
-%   5. Control         - RC (joystick) or waypoint following, chosen by data.useRC
+%   5. Control         - RC (joystick) or waypoint following, chosen by data.useRC.
+%                        waypointControl drives to data.goal, which tasks set.
 
 %Default scanthecode report
 scanthecode='';
@@ -49,7 +50,7 @@ scanthecode='';
 if isempty(data)
 
     % ---- Mode ----
-    data.useRC = true;          % true = joystick (RC), false = waypoint following
+    data.useRC = false;          % true = joystick (RC), false = waypoint following
     data.objectCal = false;      % true = turn on prints for object data (clusters, area, height)
 
     % ---- Classifier memory (Classify.m fills it in on the first call) ----
@@ -63,24 +64,36 @@ if isempty(data)
         data.joy = sim3d.io.Joystick(ID=1);
     end
 
-    % ---- Waypoint following ----
-    data.step        = 1;       % 1 wait, 2 heading, 3 distance, 4 reset
-    data.lastTime    = 0.0;
-    data.waypoint    = [];      % [N E]
-    data.lastYawErr  = [];
-    data.lastDistErr = [];
-    data.dt          = 0.1;     % s, assumed control period for the D terms
-    data.waitTime    = 2.0;     % s, wait before heading to a new waypoint
-    data.yawKP       = 0.5;
-    data.yawKD       = 0.3;
-    data.forwardKP   = 0.2;
-    data.forwardKD   = 0.02;
-    data.CEP99       = 0.4459;  % m, waypoint reached when closer than this
-    data.yawStd      = 0.0152;     % rad, heading "good enough" threshold
+    % ---- Goal (the ONLY input to navigation) ----
+    %   Tasks (search, gates, dock, ...) write [N E yaw] here (yaw in rad, NED;
+    %   NaN = no final yaw, end facing the direction of travel); [] = no goal,
+    %   hold still. waypointControl drives to whatever is in data.goal.
+    data.goal = [];
+    % data.goal = [30 0 pi]; % uncomment to test navigation on its own (end facing East)
+    data.search = [];
 
-    % ---- A0 list from confirmed objects (used by navigation) ----
-    data.A0_centroids = zeros(2, 0);   % each column is [East; North]
-    data.A0_ids       = [];
+    % ---- Navigation (waypointControl) ----
+    %   Read-only for tasks: data.nav.status ("idle"/"turn"/"drive"/"arrived"),
+    %   data.nav.arrived, data.nav.distErr, data.nav.waypoint
+    data.nav.status      = "idle";
+    data.nav.arrived     = false;
+    data.nav.waypoint    = [];      % [N E] goal currently being driven to
+    data.nav.goalYaw     = NaN;     % rad, final yaw (NaN = none)
+    data.nav.distErr     = inf;     % m, distance to waypoint (inf = no waypoint)
+    data.nav.lastYawErr  = [];
+    data.nav.lastDistErr = [];
+    data.nav.dt          = 0.1;     % s, assumed control period for the D terms
+    data.nav.yawKP       = 0.5;
+    data.nav.yawKD       = 0.3;
+    data.nav.forwardKP   = 0.2;
+    data.nav.forwardKD   = 0.02;
+    data.nav.maxForward  = 0.75;    % forward command limit while driving
+    data.nav.CEP99       = 0.4459;  % m, waypoint reached when closer than this
+    data.nav.yawStd      = 0.0152;  % rad, heading "good enough" to start driving
+    data.nav.repivotYaw  = deg2rad(45); % rad, stop and turn in place if heading error grows past this
+    data.nav.holdRadius  = 1.5;     % m, after arriving, re-approach if pushed farther than this
+    data.nav.goalTol     = 0.5;     % m, goal moves less than this = same goal (no reset)
+    data.nav.realignYaw  = deg2rad(5); % rad, after arriving, re-align if yaw drifts past this
 
     % ---- Plot settings ----
     data.maxClusters = 30;      % hull / centroid slots preallocated per frame
@@ -211,17 +224,6 @@ LidarFiltered = filterLidar(LidarScan, state, data.lidar);
 %   data.cls - classifier memory; also holds points/clusters/tracks for plotting
 [objects, data.cls] = Classify(LidarFiltered, state, data.cls);
 
-% A0 list from confirmed objects (used by navigation)
-data.A0_centroids = zeros(2, 0);   % each column is [East; North]
-data.A0_ids       = [];
-if ~isempty(objects)
-    isA0 = [objects.className] == "A0";
-    if any(isA0)
-        data.A0_centroids = vertcat(objects(isA0).center)';
-        data.A0_ids       = [objects(isA0).id];
-    end
-end
-
 %% ========================================================================
 %  4. PLOTTING (property updates only - nothing is created here)
 %  ========================================================================
@@ -233,11 +235,27 @@ end
 %% ========================================================================
 %  5. CONTROL
 %  ========================================================================
+%   (Task manager goes here later: it picks the active task, and the task sets
+%    data.goal. Navigation below just drives to data.goal.)
 if data.useRC
     commands = rcControl(data);
 else
-    [commands, data] = waypointControl(state, data);
+    % Everything to stay out of: this frame's clusters (incl. dock, unconfirmed)
+    % plus confirmed objects remembered by the tracker
+    hulls = data.cls.clusterHulls(data.cls.clusterAreas > 0);
+    if ~isempty(objects)
+        hulls = [hulls; {objects.hull}'];
+    end
+    % [data.goal, data.search] = search(state, hulls, data.search);   % temporary: until the task manager exists
+    [commands, data.nav] = waypointControl(state, data.nav, data.goal);
     commands.projectiles = [false false];
+end
+
+% Waypoint marker on the simulator map (hidden when there is no goal)
+if isempty(data.nav.waypoint)
+    set(data.waypointPlot, 'XData', nan, 'YData', nan);
+else
+    set(data.waypointPlot, 'XData', data.nav.waypoint(2), 'YData', data.nav.waypoint(1));
 end
 
 drawnow;
@@ -368,104 +386,161 @@ if ~isempty(areasInView)
 end
 end
 
-%%  Waypoint following: wait -> fix heading -> drive -> reset
-function [commands, data] = waypointControl(state, data)
+%%  Navigation: drive to a [N E] goal, optionally finish at a yaw. Handles ALL boat navigation.
+function [commands, nav] = waypointControl(state, nav, goal)
+%[commands, nav] = waypointControl(state, nav, goal)
+%   goal - [N E yaw] (m, m, rad NED: 0 = North, positive = clockwise),
+%          [N E] or [N E NaN] for "no final yaw" (ends facing the direction
+%          it traveled), or [] for "no goal" (thrusters off).
+%   nav  - navigation memory/settings (data.nav). Tasks may read:
+%            nav.status   "idle"    no goal
+%                         "turn"    turning in place toward the goal
+%                         "drive"   driving to the goal (heading held)
+%                         "align"   at the goal, turning to the final yaw
+%                         "arrived" at the goal (and yaw, if given); thrusters off
+%            nav.arrived  true while status is "arrived"
+%            nav.distErr  m to the current waypoint (inf when idle)
+%
+%   The goal can be changed on any call. A position move bigger than
+%   nav.goalTol is a new goal (fresh D terms, turn first if not already
+%   driving); smaller moves just update the target. A yaw change on its own
+%   is picked up by "arrived" (re-aligns past nav.realignYaw).
 
 commands.actuators = [0 0];   % safe default for every path
 
-switch data.step
-    case 1 % wait for waypoint
-        % Gate = midpoint between the two closest confirmed A0 buoys that are
-        % in front of the boat.
-        C = [data.A0_centroids(2, :)' data.A0_centroids(1, :)'];   % [N E]
-        d = C - state.Pos(:, 1:2);
-        dist = vecnorm(d, 2, 2);
-        dist(d * [cos(state.rot(3)); sin(state.rot(3))] < 0) = inf;   % behind us
-        [nearest, idx] = mink(dist, 2);
-
-        if numel(idx) >= 2 && all(isfinite(nearest))
-            data.waypoint = mean(C(idx, :), 1);   % [N E]
-        end
-
-        % Show the waypoint and move on once we have one and have waited long enough
-        if ~isempty(data.waypoint) && abs(data.lastTime - state.time) > data.waitTime
-            data.waypointPlot.XData = data.waypoint(2);
-            data.waypointPlot.YData = data.waypoint(1);
-            data.lastYawErr  = [];    % fresh D terms for the new waypoint
-            data.lastDistErr = [];
-            data.step = 2;
-        end
-
-    case 2 % correct for heading
-        thetaWaypoint = atan2(data.waypoint(2) - state.Pos(2), data.waypoint(1) - state.Pos(1));
-        yawErr = wrapToPi(state.rot(3) - thetaWaypoint);
-        if isempty(data.lastYawErr)
-            data.lastYawErr = yawErr;
-        end
-        P = yawErr;
-        D = (yawErr - data.lastYawErr) / data.dt;
-        data.lastYawErr = yawErr;
-        headingCorrect = P * data.yawKP + D * data.yawKD;
-
-        % clamp for cmd
-        port_cmd      = max(min(headingCorrect, 1), -1);
-        starboard_cmd = max(min(headingCorrect, 1), -1);
-        % positive means CW
-        commands.actuators = [-port_cmd starboard_cmd];
-
-        if abs(yawErr) < data.yawStd
-            data.step = 3;
-        end
-
-    case 3 % correct for dist
-        % heading PD controller
-        thetaWaypoint = atan2(data.waypoint(2) - state.Pos(2), data.waypoint(1) - state.Pos(1));
-        yawErr = wrapToPi(state.rot(3) - thetaWaypoint);
-        if isempty(data.lastYawErr)
-            data.lastYawErr = yawErr;
-        end
-        yawP = yawErr;
-        yawD = (yawErr - data.lastYawErr) / data.dt;
-        data.lastYawErr = yawErr;
-        headingCorrect = yawP * data.yawKP + yawD * data.yawKD;
-
-        % clamp into cmd (positive means CW)
-        headingCorrect = max(min(headingCorrect, 1), -1);
-        port_cmd      = -headingCorrect;
-        starboard_cmd = headingCorrect;
-
-        % dist PD controller
-        distErr = hypot(data.waypoint(2) - state.Pos(2), data.waypoint(1) - state.Pos(1));
-        if isempty(data.lastDistErr)
-            data.lastDistErr = distErr;
-        end
-        distP = distErr;
-        distD = (distErr - data.lastDistErr) / data.dt;
-        data.lastDistErr = distErr;
-        forwardCommand = distP * data.forwardKP + distD * data.forwardKD;
-        forwardCommand = max(min(forwardCommand, 0.75), -0.75);
-
-        % Clamp forward command and combine with heading correction
-        port_cmd      = max(min(port_cmd + forwardCommand, 1), -1);
-        starboard_cmd = max(min(starboard_cmd + forwardCommand, 1), -1);
-        commands.actuators = [port_cmd starboard_cmd];
-
-        if abs(distErr) < data.CEP99
-            data.step = 4;
-        end
-
-    case 4 % reached: clear the waypoint and start over
-        data.waypointPlot.XData = nan;
-        data.waypointPlot.YData = nan;
-
-        data.waypoint = [];
-        data.step     = 1;
-        data.lastTime = state.time;
-
-    otherwise
-        data.step = 1;
+% ---- Goal handling ----
+if isempty(goal)
+    nav.status      = "idle";
+    nav.arrived     = false;
+    nav.waypoint    = [];
+    nav.goalYaw     = NaN;
+    nav.distErr     = inf;
+    nav.lastYawErr  = [];
+    nav.lastDistErr = [];
+    return
 end
 
+goal   = goal(:)';
+goalNE = goal(1:2);
+nav.goalYaw = NaN;
+if numel(goal) >= 3
+    nav.goalYaw = goal(3);
+end
+hasYaw = ~isnan(nav.goalYaw);
+
+if isempty(nav.waypoint) || norm(goalNE - nav.waypoint) > nav.goalTol
+    % New goal
+    nav.waypoint    = goalNE;
+    nav.lastYawErr  = [];
+    nav.lastDistErr = [];
+    if nav.status ~= "drive"
+        nav.status = "turn";
+    end
+else
+    nav.waypoint = goalNE;   % small nudge: same goal
+end
+
+% ---- Errors (shared by every state) ----
+dN = nav.waypoint(1) - state.Pos(1);
+dE = nav.waypoint(2) - state.Pos(2);
+distErr    = hypot(dN, dE);
+bearingErr = wrapToPi(state.rot(3) - atan2(dE, dN));   % >0: goal is to port, turn CCW
+finalErr   = NaN;
+if hasYaw
+    finalErr = wrapToPi(state.rot(3) - nav.goalYaw);   % same sign convention
+end
+nav.distErr = distErr;
+if isempty(nav.lastDistErr), nav.lastDistErr = distErr; end
+
+% ---- State machine ----
+%   Any switch to a state that steers on a DIFFERENT error clears lastYawErr
+%   so the D term doesn't spike.
+switch nav.status
+    case "turn"      % turn in place until pointed at the goal
+        if distErr < nav.CEP99
+            nav = atGoal(nav, hasYaw);
+        else
+            [hc, nav] = headingPD(nav, bearingErr);
+            commands.actuators = [-hc hc];
+            if abs(bearingErr) < nav.yawStd
+                nav.status      = "drive";
+                nav.lastDistErr = distErr;   % fresh distance D term
+            end
+        end
+
+    case "drive"     % drive forward while holding heading
+        [hc, nav] = headingPD(nav, bearingErr);
+        forwardCmd = nav.forwardKP * distErr + ...
+                     nav.forwardKD * (distErr - nav.lastDistErr) / nav.dt;
+        forwardCmd = max(min(forwardCmd, nav.maxForward), -nav.maxForward);
+
+        port      = max(min(-hc + forwardCmd, 1), -1);
+        starboard = max(min( hc + forwardCmd, 1), -1);
+        commands.actuators = [port starboard];
+
+        if distErr < nav.CEP99
+            nav = atGoal(nav, hasYaw);
+            commands.actuators = [0 0];
+        elseif abs(bearingErr) > nav.repivotYaw
+            % Overshot, got pushed, or goal jumped sideways: stop and turn
+            nav.status = "turn";
+            commands.actuators = [-hc hc];
+        end
+
+    case "align"     % at the goal: turn in place to the final yaw
+        if distErr > nav.holdRadius
+            nav.status = "turn";            % pushed off the point: go back
+            nav.lastYawErr = [];
+        elseif ~hasYaw
+            nav.status = "arrived";         % final yaw was removed
+        else
+            [hc, nav] = headingPD(nav, finalErr);
+            commands.actuators = [-hc hc];
+            if abs(finalErr) < nav.yawStd
+                nav.status = "arrived";
+                commands.actuators = [0 0];
+            end
+        end
+
+    case "arrived"   % thrusters off; react only if pushed away or rotated
+        if distErr > nav.holdRadius
+            nav.status = "turn";
+            nav.lastYawErr = [];
+        elseif hasYaw && abs(finalErr) > nav.realignYaw
+            nav.status = "align";
+            nav.lastYawErr = [];
+        end
+
+    otherwise        % "idle" with a goal (shouldn't happen) -> start turning
+        nav.status = "turn";
+end
+
+nav.lastDistErr = distErr;
+nav.arrived     = nav.status == "arrived";
+
+end
+
+
+function nav = atGoal(nav, hasYaw)
+% Reached the goal position: align to the final yaw if there is one.
+if hasYaw
+    nav.status = "align";
+else
+    nav.status = "arrived";
+end
+nav.lastYawErr = [];   % align steers on a different error than turn/drive
+end
+
+
+function [hc, nav] = headingPD(nav, yawErr)
+% Heading PD on yawErr (rad). Output clamped to [-1 1]; positive = turn CCW,
+% applied as actuators [-hc hc].
+if isempty(nav.lastYawErr)
+    nav.lastYawErr = yawErr;
+end
+hc = nav.yawKP * yawErr + nav.yawKD * (yawErr - nav.lastYawErr) / nav.dt;
+hc = max(min(hc, 1), -1);
+nav.lastYawErr = yawErr;
 end
 
 %%  Plot updates - set properties on handles made in the init block

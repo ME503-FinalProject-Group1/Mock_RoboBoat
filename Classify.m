@@ -69,7 +69,7 @@ s.mapMemory      = 2.0;              % s, how long points stay in the map
 
 % Clustering
 s.dbscanEps    = 0.7;                % m, DBSCAN neighbor radius
-s.dbscanMinPts = 20;                 % points needed to form a cluster
+s.dbscanMinPts = 10;                 % points needed to form a cluster
 
 % Detection
 s.minDetectDist = 1.0;               % m, clusters closer than this are our own boat
@@ -78,7 +78,7 @@ s.minDetectDist = 1.0;               % m, clusters closer than this are our own 
 s.matchDistance = 1.0;               % m, detection this close to a track = same object
 s.confirmTime   = 2.5;               % s, must be longer than mapMemory
 s.forgetTime    = 1.5;               % s, unconfirmed track unseen this long = noise
-s.dropTime      = 30;                % s, confirmed track unseen this long = removed
+s.dropTime      = 300;                % s, confirmed track unseen this long = removed
 
 end
 
